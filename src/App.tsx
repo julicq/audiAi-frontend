@@ -254,6 +254,7 @@ function ChatTab(props: { token: string | null }) {
         if (done) {
           // Соединение закрыто - если мы дошли сюда без события 'done', значит что-то пошло не так
           // Но все равно остановим загрузку
+          console.warn('Reader done=true, but no done event received. Stopping loading anyway.');
           clearTimeout(timeout);
           setLoading(false);
           break;
@@ -264,6 +265,11 @@ function ChatTab(props: { token: string | null }) {
         buffer = lines.pop() || ''; // Оставляем неполную строку в буфере
 
         for (const line of lines) {
+          // Логируем все строки для отладки (можно убрать позже)
+          if (line.trim() && !line.startsWith('data: ')) {
+            console.debug('SSE non-data line:', line);
+          }
+          
           if (!line.startsWith('data: ')) continue;
           
           const payload = line.slice(6).trim(); // Убираем "data: " (6 символов)
@@ -271,6 +277,7 @@ function ChatTab(props: { token: string | null }) {
           
           try {
             const json = JSON.parse(payload);
+            console.debug('SSE event received:', json.type, json);
             
             switch (json.type) {
               case 'chunk':
@@ -300,6 +307,7 @@ function ChatTab(props: { token: string | null }) {
                 }
                 clearTimeout(timeout);
                 setLoading(false);
+                console.log('Loading stopped, returning from handleSend');
                 return; // ВАЖНО: выйти из функции
               
               case 'error':
@@ -308,6 +316,7 @@ function ChatTab(props: { token: string | null }) {
                 clearTimeout(timeout);
                 setError(json.message || 'An error occurred');
                 setLoading(false);
+                console.log('Loading stopped due to error, returning from handleSend');
                 return; // ВАЖНО: выйти из функции
               
               case 'warning':
@@ -316,6 +325,7 @@ function ChatTab(props: { token: string | null }) {
               
               default:
                 // Для обратной совместимости: если нет типа, но есть content
+                console.warn('Unknown SSE event type:', json.type, json);
                 const content = json.content || json.delta || '';
                 if (typeof content === 'string' && content.length > 0) {
                   assistantContent += content;
@@ -329,7 +339,7 @@ function ChatTab(props: { token: string | null }) {
             }
           } catch (e) {
             // Если не JSON, игнорируем (не добавляем в контент)
-            console.error('Error parsing SSE data:', e, line);
+            console.error('Error parsing SSE data:', e, 'Line:', line);
           }
         }
       }
