@@ -18,7 +18,17 @@ const generateUUID = () => {
 
 // Use relative URLs in production, or environment variable if set
 // Empty string means use same origin (current domain)
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
+// Remove trailing slashes and /api/v1 if present to avoid duplication
+const getApiBaseUrl = () => {
+  const envUrl = import.meta.env.VITE_API_BASE_URL ?? '';
+  if (!envUrl) return ''; // Use relative path
+  // Remove trailing slash and /api/v1 if present
+  let url = envUrl.replace(/\/+$/, ''); // Remove trailing slashes
+  url = url.replace(/\/api\/v1\/?$/, ''); // Remove /api/v1 at the end
+  return url;
+};
+
+const API_BASE_URL = getApiBaseUrl();
 const ML_BASE_URL = import.meta.env.VITE_ML_BASE_URL ?? '';
 
 type ChatMessage = {
