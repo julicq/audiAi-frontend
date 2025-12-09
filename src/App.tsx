@@ -3,6 +3,19 @@ import { useRef, useState } from 'react'
 
 type TabKey = 'chat' | 'rag';
 
+// Generate UUID - use crypto.randomUUID if available, otherwise fallback
+const generateUUID = () => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Fallback for browsers that don't support crypto.randomUUID
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
 // Use relative URLs in production, or environment variable if set
 // Empty string means use same origin (current domain)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
@@ -170,7 +183,7 @@ function ChatTab(props: { token: string | null }) {
       setMessages((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           role: 'assistant',
           content: `I have received "${file.name}". You can ask me to check this document for compliance or analyze it.`,
           createdAt: new Date().toISOString(),
@@ -199,7 +212,7 @@ function ChatTab(props: { token: string | null }) {
     setLoading(true);
 
     const newUserMessage: ChatMessage = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       role: 'user',
       content: input,
       createdAt: new Date().toISOString(),
@@ -252,7 +265,7 @@ function ChatTab(props: { token: string | null }) {
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder('utf-8');
-      let assistantId = crypto.randomUUID();
+      let assistantId = generateUUID();
       let assistantContent = '';
       let buffer = ''; // Буфер для многострочных SSE событий
 
