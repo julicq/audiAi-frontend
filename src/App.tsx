@@ -201,15 +201,23 @@ function ChatTab(props: { token: string | null }) {
       return;
     }
 
+    // Таймаут на случай, если ответ не придет
+    const timeout = setTimeout(() => {
+      setLoading(false);
+      setError('Request timeout - no response received');
+    }, 60000); // 60 секунд
+
     try {
       // Chat API expects analysis_id in the URL path
       const url = `${API_BASE_URL}/api/v1/chat/message/stream/${sid}`;
+      const userEmail = props.token || 'test@example.com';
 
       const res = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
+          'X-User-Email': userEmail,
           ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
           'X-LLM-Provider': provider,
           'X-LLM-Model': model,
@@ -228,6 +236,7 @@ function ChatTab(props: { token: string | null }) {
       const decoder = new TextDecoder('utf-8');
       let assistantId = crypto.randomUUID();
       let assistantContent = '';
+      let buffer = ''; // Буфер для многострочных SSE событий
 
       setMessages((prev) => [
         ...prev,
@@ -241,40 +250,92 @@ function ChatTab(props: { token: string | null }) {
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
+        
+        if (done) {
+          // Соединение закрыто - если мы дошли сюда без события 'done', значит что-то пошло не так
+          // Но все равно остановим загрузку
+          clearTimeout(timeout);
+          setLoading(false);
+          break;
+        }
 
-        // Very simple SSE parser: lines starting with "data:"
-        const lines = chunk.split('\n');
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Оставляем неполную строку в буфере
+
         for (const line of lines) {
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
+          if (!line.startsWith('data: ')) continue;
+          
+          const payload = line.slice(6).trim(); // Убираем "data: " (6 символов)
           if (!payload || payload === '[DONE]') continue;
+          
           try {
             const json = JSON.parse(payload);
-            const delta = json.delta ?? json.content ?? '';
-            if (typeof delta === 'string' && delta.length > 0) {
-              assistantContent += delta;
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId ? { ...m, content: assistantContent } : m,
-                ),
-              );
+            
+            switch (json.type) {
+              case 'chunk':
+                // Обрабатываем чанк текста
+                const chunkContent = json.content || '';
+                if (typeof chunkContent === 'string' && chunkContent.length > 0) {
+                  assistantContent += chunkContent;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantId ? { ...m, content: assistantContent } : m,
+                    ),
+                  );
+                }
+                break;
+              
+              case 'done':
+                // ВАЖНО: Вызвать onDone и остановить загрузку
+                console.log('Received done event:', json);
+                const fullResponse = json.full_response || assistantContent;
+                if (fullResponse && fullResponse !== assistantContent) {
+                  assistantContent = fullResponse;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantId ? { ...m, content: assistantContent } : m,
+                    ),
+                  );
+                }
+                clearTimeout(timeout);
+                setLoading(false);
+                return; // ВАЖНО: выйти из функции
+              
+              case 'error':
+                // ВАЖНО: Вызвать onError и остановить загрузку
+                console.error('Received error event:', json);
+                clearTimeout(timeout);
+                setError(json.message || 'An error occurred');
+                setLoading(false);
+                return; // ВАЖНО: выйти из функции
+              
+              case 'warning':
+                console.warn('Chat warning:', json.message);
+                break;
+              
+              default:
+                // Для обратной совместимости: если нет типа, но есть content
+                const content = json.content || json.delta || '';
+                if (typeof content === 'string' && content.length > 0) {
+                  assistantContent += content;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantId ? { ...m, content: assistantContent } : m,
+                    ),
+                  );
+                }
+                break;
             }
-          } catch {
-            // If not JSON, append raw text
-            assistantContent += payload;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId ? { ...m, content: assistantContent } : m,
-              ),
-            );
+          } catch (e) {
+            // Если не JSON, игнорируем (не добавляем в контент)
+            console.error('Error parsing SSE data:', e, line);
           }
         }
       }
     } catch (err: any) {
+      clearTimeout(timeout);
       setError(err.message ?? 'Chat request failed');
-    } finally {
       setLoading(false);
     }
   };
