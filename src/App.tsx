@@ -90,9 +90,15 @@ function ChatTab(props: { token: string | null }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const ensureSession = async (): Promise<string | null> => {
-    if (sessionId) return sessionId;
+    if (sessionId) {
+      console.log('ensureSession: using existing session:', sessionId);
+      return sessionId;
+    }
+    console.log('ensureSession: creating new session, API_BASE_URL:', API_BASE_URL);
     try {
-      const res = await fetch(`${API_BASE_URL}/api/v1/chat/session`, {
+      const sessionUrl = `${API_BASE_URL}/api/v1/chat/session`;
+      console.log('ensureSession: fetching:', sessionUrl);
+      const res = await fetch(sessionUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -183,7 +189,12 @@ function ChatTab(props: { token: string | null }) {
   };
 
   const handleSend = async () => {
-    if (!input.trim()) return;
+    console.log('handleSend called, input:', input);
+    if (!input.trim()) {
+      console.log('handleSend: input is empty, returning');
+      return;
+    }
+    console.log('handleSend: starting request...');
     setError(null);
     setLoading(true);
 
@@ -197,11 +208,14 @@ function ChatTab(props: { token: string | null }) {
     const textToSend = input;
     setInput('');
 
+    console.log('handleSend: ensuring session...');
     const sid = await ensureSession();
     if (!sid) {
+      console.error('handleSend: failed to get session ID');
       setLoading(false);
       return;
     }
+    console.log('handleSend: session ID:', sid);
 
     // Таймаут на случай, если ответ не придет
     const timeout = setTimeout(() => {
@@ -213,6 +227,8 @@ function ChatTab(props: { token: string | null }) {
       // Chat API expects analysis_id in the URL path
       const url = `${API_BASE_URL}/api/v1/chat/message/stream/${sid}`;
       const userEmail = props.token || 'test@example.com';
+      console.log('handleSend: making fetch request to:', url);
+      console.log('handleSend: API_BASE_URL:', API_BASE_URL);
 
       const res = await fetch(url, {
         method: 'POST',
