@@ -3,8 +3,10 @@ import { useRef, useState } from 'react'
 
 type TabKey = 'chat' | 'rag';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-const ML_BASE_URL = import.meta.env.VITE_ML_BASE_URL ?? 'http://localhost:8001';
+// Use relative URLs in production, or environment variable if set
+// Empty string means use same origin (current domain)
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
+const ML_BASE_URL = import.meta.env.VITE_ML_BASE_URL ?? '';
 
 type ChatMessage = {
   id: string;
