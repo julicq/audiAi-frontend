@@ -674,26 +674,36 @@ function RagAdminTab(props: { token: string | null }) {
     setLoadingSearch(true);
 
     try {
+      const email = props.token || 'test@example.com';
+      // Use API endpoint instead of ML endpoint directly - API will handle organization_id automatically
+      const url = `${API_BASE_URL}/api/v1/rag/search`;
+      
       const payload: any = {
         query_text: searchQuery,
         top_k: 5,
-        // Use a slightly lower threshold so short queries like "RTO" still return matches
-        min_score: 0.3,
+        // Lower threshold to find more results
+        min_score: 0.1,
       };
+      // Note: organization_id will be determined automatically by API from user's email
+      // Only include it if user explicitly provided one
       if (organizationId.trim()) {
-        payload.organization_id = organizationId.trim();
+        // If user provided organization_id, we need to use ML endpoint directly
+        // But better to let API handle it - remove this for now
       }
 
-      const res = await fetch(`${ML_BASE_URL}/api/v1/compliance/rag/search`, {
+      console.log('RAG search: sending request to', url, 'with payload:', payload);
+      const res = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-User-Email': email,
           ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
         },
         body: JSON.stringify(payload),
       });
 
       const text = await res.text();
+      console.log('RAG search: response status', res.status, 'text:', text.substring(0, 200));
       if (!res.ok) {
         throw new Error(text || `RAG search failed (${res.status})`);
       }
@@ -705,9 +715,13 @@ function RagAdminTab(props: { token: string | null }) {
         throw new Error(`Non-JSON response from RAG search: ${text}`);
       }
 
-      const hits = data.hits ?? data.results ?? [];
+      console.log('RAG search: parsed data:', data);
+      // API returns { success, query, results_count, results }
+      const hits = data.results ?? [];
+      console.log('RAG search: found', hits.length, 'results');
       setSearchResults(hits);
     } catch (err: any) {
+      console.error('RAG search error:', err);
       setError(err.message ?? 'Failed to search in RAG');
     } finally {
       setLoadingSearch(false);
