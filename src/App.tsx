@@ -536,8 +536,10 @@ function RagAdminTab(props: { token: string | null }) {
   const [loadingUpload, setLoadingUpload] = useState(false);
   const [loadingFileUpload, setLoadingFileUpload] = useState(false);
   const [loadingSearch, setLoadingSearch] = useState(false);
+  const [loadingClear, setLoadingClear] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPlainTextSection, setShowPlainTextSection] = useState(false);
+  const [clearConfirm, setClearConfirm] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
@@ -728,6 +730,60 @@ function RagAdminTab(props: { token: string | null }) {
     }
   };
 
+  const handleClearRag = async () => {
+    if (!clearConfirm) {
+      setClearConfirm(true);
+      setError(null);
+      return;
+    }
+
+    setError(null);
+    setLoadingClear(true);
+    setClearConfirm(false);
+
+    try {
+      const email = props.token || 'test@example.com';
+      const url = `${API_BASE_URL}/api/v1/rag/clear`;
+
+      console.log('RAG clear: sending request to', url);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-User-Email': email,
+          ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
+        },
+        body: JSON.stringify({}),
+      });
+
+      const text = await res.text();
+      console.log('RAG clear: response status', res.status, 'text:', text);
+      if (!res.ok) {
+        throw new Error(text || `RAG clear failed (${res.status})`);
+      }
+
+      let data: any;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`Non-JSON response from RAG clear: ${text}`);
+      }
+
+      console.log('RAG clear: parsed data:', data);
+      if (data.success) {
+        setUploadResult(`Successfully cleared RAG collection. Deleted ${data.deleted_count || 0} points.`);
+        setSearchResults([]); // Clear search results
+      } else {
+        throw new Error(data.message || 'RAG clear failed');
+      }
+    } catch (err: any) {
+      console.error('RAG clear error:', err);
+      setError(err.message ?? 'Failed to clear RAG collection');
+    } finally {
+      setLoadingClear(false);
+    }
+  };
+
   return (
     <div className="panel">
       <div className="panel-header">
@@ -884,6 +940,54 @@ function RagAdminTab(props: { token: string | null }) {
                 </div>
               );
             })}
+          </div>
+        )}
+      </div>
+
+      <div className="panel-section">
+        <h3>Clear RAG Collection</h3>
+        <p className="auth-subtitle">
+          WARNING: This will delete ALL indexed documents from RAG for your organization.
+          This action cannot be undone. Use this to reset the knowledge base or after
+          updating chunking strategies.
+        </p>
+        {clearConfirm ? (
+          <div>
+            <p style={{ color: 'red', fontWeight: 'bold', marginBottom: '10px' }}>
+              Are you sure you want to delete ALL documents from RAG? This cannot be undone!
+            </p>
+            <button
+              className="primary-button"
+              onClick={() => void handleClearRag()}
+              disabled={loadingClear}
+              style={{ backgroundColor: '#dc3545', marginRight: '10px' }}
+            >
+              {loadingClear ? 'Clearing...' : 'Yes, Delete All'}
+            </button>
+            <button
+              className="secondary-button"
+              onClick={() => {
+                setClearConfirm(false);
+                setError(null);
+              }}
+              disabled={loadingClear}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <button
+            className="secondary-button"
+            onClick={() => setClearConfirm(true)}
+            disabled={loadingClear}
+            style={{ backgroundColor: '#dc3545', color: 'white' }}
+          >
+            Clear RAG Collection
+          </button>
+        )}
+        {uploadResult && uploadResult.includes('cleared') && (
+          <div className="panel-success" style={{ marginTop: '10px' }}>
+            {uploadResult}
           </div>
         )}
       </div>
