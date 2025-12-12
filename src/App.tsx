@@ -1,5 +1,5 @@
 import './App.css'
-import { useRef, useState } from 'react'
+import { useRef, useState, useEffect } from 'react'
 
 type TabKey = 'chat' | 'rag';
 
@@ -52,13 +52,17 @@ function LoginForm(props: { onLoginSuccess: (token: string) => void }) {
     // Temporary login-less mode: do not call API.
     // We simply store the email locally and let the backend
     // use its own DEV_DEFAULT_USER_EMAIL / auto-create logic.
-    const effectiveEmail = email || 'test@example.com';
-    if (!effectiveEmail) {
-      setError('Please enter your work email.');
+    const effectiveEmail = email.trim() || 'test@example.com';
+    if (!effectiveEmail || !effectiveEmail.includes('@')) {
+      setError('Please enter a valid work email.');
       setLoading(false);
       return;
     }
 
+    // Save email to localStorage and pass to parent
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('auditai_user_email', effectiveEmail);
+    }
     props.onLoginSuccess(effectiveEmail);
     setLoading(false);
   };
@@ -109,7 +113,34 @@ function ChatTab(props: { token: string | null }) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [provider, setProvider] = useState<'openai' | 'gemini'>('openai');
+  
+  // Model options for each provider
+  const gptModels = [
+    { value: 'gpt-5.1', label: 'GPT-5.1' },
+    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o mini' },
+    { value: 'gpt-5.2', label: 'GPT-5.2' },
+  ];
+  
+  const geminiModels = [
+    { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro Preview' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { value: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash Lite' },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+  ];
+  
   const [model, setModel] = useState<string>('gpt-4o-mini');
+  
+  // Update model when provider changes
+  const handleProviderChange = (newProvider: 'openai' | 'gemini') => {
+    setProvider(newProvider);
+    // Set default model for the new provider
+    if (newProvider === 'openai') {
+      setModel('gpt-4o-mini');
+    } else {
+      setModel('gemini-2.5-flash');
+    }
+  };
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const ensureSession = async (): Promise<string | null> => {
@@ -158,9 +189,8 @@ function ChatTab(props: { token: string | null }) {
 
     try {
       const email = props.token || 'test@example.com';
-      const url = `${API_BASE_URL}/api/v1/documents/upload?email=${encodeURIComponent(
-        email,
-      )}`;
+      // Remove email from query parameter - use X-User-Email header instead
+      const url = `${API_BASE_URL}/api/v1/documents/upload`;
 
       // Ensure session exists before uploading
       const sid = await ensureSession();
@@ -173,13 +203,13 @@ function ChatTab(props: { token: string | null }) {
       // Use a valid backend enum value for DocumentType (see DocumentType in backend)
       // "policy" is a safe default for most compliance documents.
       formData.append('document_type', 'policy');
-      formData.append('user_email', email);
       // Link document to current chat session
       formData.append('analysis_id', sid);
 
       const res = await fetch(url, {
         method: 'POST',
         headers: {
+          'X-User-Email': email,  // Use header instead of query parameter
           ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
         },
         body: formData,
@@ -240,11 +270,11 @@ function ChatTab(props: { token: string | null }) {
     }
     console.log('handleSend: session ID:', sid);
 
-    // Таймаут на случай, если ответ не придет
+    // Timeout in case response doesn't arrive
     const timeout = setTimeout(() => {
       setLoading(false);
       setError('Request timeout - no response received');
-    }, 60000); // 60 секунд
+    }, 60000); // 60 seconds
 
     try {
       // Chat API expects analysis_id in the URL path
@@ -277,7 +307,7 @@ function ChatTab(props: { token: string | null }) {
       const decoder = new TextDecoder('utf-8');
       let assistantId = generateUUID();
       let assistantContent = '';
-      let buffer = ''; // Буфер для многострочных SSE событий
+      let buffer = ''; // Buffer for multi-line SSE events
 
       setMessages((prev) => [
         ...prev,
@@ -293,8 +323,36 @@ function ChatTab(props: { token: string | null }) {
         const { done, value } = await reader.read();
         
         if (done) {
-          // Соединение закрыто - если мы дошли сюда без события 'done', значит что-то пошло не так
-          // Но все равно остановим загрузку
+          if (buffer.trim()) {
+            const remainingLines = buffer.split('\n');
+            for (const line of remainingLines) {
+              if (line.startsWith('data: ')) {
+                const payload = line.slice(6).trim();
+                if (payload && payload !== '[DONE]') {
+                  try {
+                    const json = JSON.parse(payload);
+                    if (json.type === 'done') {
+                      console.log('Received done event from buffer:', json);
+                      const fullResponse = json.full_response || assistantContent;
+                      if (fullResponse && fullResponse !== assistantContent) {
+                        assistantContent = fullResponse;
+                        setMessages((prev) =>
+                          prev.map((m) =>
+                            m.id === assistantId ? { ...m, content: assistantContent } : m,
+                          ),
+                        );
+                      }
+                      clearTimeout(timeout);
+                      setLoading(false);
+                      return;
+                    }
+                  } catch (e) {
+                    console.error('Error parsing final buffer:', e);
+                  }
+                }
+              }
+            }
+          }
           console.warn('Reader done=true, but no done event received. Stopping loading anyway.');
           clearTimeout(timeout);
           setLoading(false);
@@ -303,17 +361,17 @@ function ChatTab(props: { token: string | null }) {
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // Оставляем неполную строку в буфере
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
 
         for (const line of lines) {
-          // Логируем все строки для отладки (можно убрать позже)
+          // Log all lines for debugging (can be removed later)
           if (line.trim() && !line.startsWith('data: ')) {
             console.debug('SSE non-data line:', line);
           }
           
           if (!line.startsWith('data: ')) continue;
           
-          const payload = line.slice(6).trim(); // Убираем "data: " (6 символов)
+          const payload = line.slice(6).trim(); // Remove "data: " (6 characters)
           if (!payload || payload === '[DONE]') continue;
           
           try {
@@ -322,50 +380,50 @@ function ChatTab(props: { token: string | null }) {
             
             switch (json.type) {
               case 'chunk':
-                // Обрабатываем чанк текста
+                // Process text chunk
                 const chunkContent = json.content || '';
                 if (typeof chunkContent === 'string' && chunkContent.length > 0) {
                   assistantContent += chunkContent;
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId ? { ...m, content: assistantContent } : m,
-                    ),
-                  );
-                }
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId ? { ...m, content: assistantContent } : m,
+                ),
+              );
+            }
                 break;
               
               case 'done':
-                // ВАЖНО: Вызвать onDone и остановить загрузку
+                // IMPORTANT: Call onDone and stop loading
                 console.log('Received done event:', json);
                 const fullResponse = json.full_response || assistantContent;
                 if (fullResponse && fullResponse !== assistantContent) {
                   assistantContent = fullResponse;
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId ? { ...m, content: assistantContent } : m,
-                    ),
-                  );
-                }
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId ? { ...m, content: assistantContent } : m,
+              ),
+            );
+          }
                 clearTimeout(timeout);
                 setLoading(false);
                 console.log('Loading stopped, returning from handleSend');
-                return; // ВАЖНО: выйти из функции
+                return; // IMPORTANT: exit from function
               
               case 'error':
-                // ВАЖНО: Вызвать onError и остановить загрузку
+                // IMPORTANT: Call onError and stop loading
                 console.error('Received error event:', json);
                 clearTimeout(timeout);
                 setError(json.message || 'An error occurred');
                 setLoading(false);
                 console.log('Loading stopped due to error, returning from handleSend');
-                return; // ВАЖНО: выйти из функции
+                return; // IMPORTANT: exit from function
               
               case 'warning':
                 console.warn('Chat warning:', json.message);
                 break;
               
               default:
-                // Для обратной совместимости: если нет типа, но есть content
+                // For backward compatibility: if no type but has content
                 console.warn('Unknown SSE event type:', json.type, json);
                 const content = json.content || json.delta || '';
                 if (typeof content === 'string' && content.length > 0) {
@@ -379,7 +437,7 @@ function ChatTab(props: { token: string | null }) {
                 break;
             }
           } catch (e) {
-            // Если не JSON, игнорируем (не добавляем в контент)
+            // If not JSON, ignore (don't add to content)
             console.error('Error parsing SSE data:', e, 'Line:', line);
           }
         }
@@ -405,7 +463,7 @@ function ChatTab(props: { token: string | null }) {
             <select
               className="auth-input"
               value={provider}
-              onChange={(e) => setProvider(e.target.value as 'openai' | 'gemini')}
+              onChange={(e) => handleProviderChange(e.target.value as 'openai' | 'gemini')}
             >
               <option value="openai">OpenAI</option>
               <option value="gemini">Gemini</option>
@@ -413,13 +471,25 @@ function ChatTab(props: { token: string | null }) {
           </label>
           <label className="auth-label inline">
             Model
-            <input
+            <select
               className="auth-input"
-              type="text"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="e.g., gpt-4o-mini or gemini-2.0-flash"
-            />
+            >
+              {provider === 'openai' ? (
+                gptModels.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))
+              ) : (
+                geminiModels.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))
+              )}
+            </select>
           </label>
         </div>
       </div>
@@ -540,11 +610,45 @@ function RagAdminTab(props: { token: string | null }) {
   const [error, setError] = useState<string | null>(null);
   const [showPlainTextSection, setShowPlainTextSection] = useState(false);
   const [clearConfirm, setClearConfirm] = useState(false);
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
     setDocumentFile(file);
   };
+
+  const loadDocuments = async () => {
+    setLoadingDocuments(true);
+    try {
+      const email = props.token || 'test@example.com';
+      const url = `${API_BASE_URL}/api/v1/documents`;
+
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'X-User-Email': email,
+          ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to load documents (${res.status})`);
+      }
+
+      const data = await res.json();
+      setDocuments(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      console.error('Error loading documents:', err);
+      setError(err.message ?? 'Failed to load documents');
+    } finally {
+      setLoadingDocuments(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadDocuments();
+  }, [props.token]);
 
   const handleUploadFileToRag = async () => {
     setError(null);
@@ -559,9 +663,8 @@ function RagAdminTab(props: { token: string | null }) {
 
     try {
       const email = props.token || 'test@example.com';
-      const url = `${API_BASE_URL}/api/v1/documents/upload?email=${encodeURIComponent(
-        email,
-      )}`;
+      // Remove email from query parameter - use X-User-Email header instead
+      const url = `${API_BASE_URL}/api/v1/documents/upload`;
 
       const formData = new FormData();
       formData.append('file', documentFile);
@@ -570,6 +673,7 @@ function RagAdminTab(props: { token: string | null }) {
       const res = await fetch(url, {
         method: 'POST',
         headers: {
+          'X-User-Email': email,  // Use header instead of query parameter
           ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
         },
         body: formData,
@@ -592,6 +696,8 @@ function RagAdminTab(props: { token: string | null }) {
         setUploadResult(
           `Document uploaded and sent to RAG. ID: ${data.id}, type: ${data.type}, status: ${data.status}.`,
         );
+        // Reload documents list after successful upload
+        void loadDocuments();
       } else {
         setUploadResult(
           `Document uploaded and sent to RAG. Raw response: ${text}`,
@@ -682,9 +788,9 @@ function RagAdminTab(props: { token: string | null }) {
       
       const payload: any = {
         query_text: searchQuery,
-        top_k: 5,
+        top_k: 10,  // Increased from 5 to 10 for better recall
         // Lower threshold to find more results
-        min_score: 0.1,
+        min_score: 0.2,  // Increased from 0.1 to 0.2 (matches backend default)
       };
       // Note: organization_id will be determined automatically by API from user's email
       // Only include it if user explicitly provided one
@@ -753,7 +859,7 @@ function RagAdminTab(props: { token: string | null }) {
           'X-User-Email': email,
           ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ clear_all: true }), // Clear all documents regardless of organization
       });
 
       const text = await res.text();
@@ -841,6 +947,72 @@ function RagAdminTab(props: { token: string | null }) {
           {loadingFileUpload ? 'Uploading…' : 'Upload file to RAG'}
         </button>
         {uploadResult && <div className="panel-success">{uploadResult}</div>}
+        
+        <div className="panel-section" style={{ marginTop: '20px' }}>
+          <h3>Uploaded Documents</h3>
+          {loadingDocuments ? (
+            <p>Loading documents...</p>
+          ) : documents.length === 0 ? (
+            <p className="auth-subtitle">No documents uploaded yet.</p>
+          ) : (
+            <div style={{ maxHeight: '400px', overflowY: 'auto', border: '1px solid #ddd', borderRadius: '4px', padding: '10px' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ borderBottom: '1px solid #ddd' }}>
+                    <th style={{ textAlign: 'left', padding: '8px' }}>Title</th>
+                    <th style={{ textAlign: 'left', padding: '8px' }}>Type</th>
+                    <th style={{ textAlign: 'left', padding: '8px' }}>Status</th>
+                    <th style={{ textAlign: 'left', padding: '8px' }}>ID</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {documents.map((doc) => (
+                    <tr key={doc.id} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: '8px' }}>{doc.title || 'Untitled'}</td>
+                      <td style={{ padding: '8px' }}>{doc.type || 'N/A'}</td>
+                      <td style={{ padding: '8px' }}>
+                        <select
+                          value={doc.status || 'pending'}
+                          onChange={async (e) => {
+                            const newStatus = e.target.value;
+                            try {
+                              const email = props.token || 'test@example.com';
+                              const res = await fetch(`${API_BASE_URL}/api/v1/documents/${doc.id}/status`, {
+                                method: 'PATCH',
+                                headers: {
+                                  'Content-Type': 'application/json',
+                                  'X-User-Email': email,
+                                  ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
+                                },
+                                body: JSON.stringify({ status: newStatus }),
+                              });
+                              if (res.ok) {
+                                void loadDocuments();
+                              } else {
+                                const errorText = await res.text();
+                                setError(`Failed to update status: ${errorText}`);
+                              }
+                            } catch (err: any) {
+                              setError(err.message ?? 'Failed to update document status');
+                            }
+                          }}
+                          style={{ padding: '4px 8px', borderRadius: '4px', border: '1px solid #ddd' }}
+                        >
+                          <option value="pending">Pending</option>
+                          <option value="compliant">Compliant</option>
+                          <option value="non_compliant">Non Compliant</option>
+                          <option value="partially_compliant">Partially Compliant</option>
+                          <option value="under_review">Under Review</option>
+                        </select>
+                      </td>
+                      <td style={{ padding: '8px', fontSize: '12px', color: '#666' }}>{doc.id}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="panel-section">
@@ -947,7 +1119,7 @@ function RagAdminTab(props: { token: string | null }) {
       <div className="panel-section">
         <h3>Clear RAG Collection</h3>
         <p className="auth-subtitle">
-          WARNING: This will delete ALL indexed documents from RAG for your organization.
+          WARNING: This will delete ALL indexed documents from RAG (across all organizations).
           This action cannot be undone. Use this to reset the knowledge base or after
           updating chunking strategies.
         </p>
@@ -999,7 +1171,26 @@ function RagAdminTab(props: { token: string | null }) {
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('chat');
-  const [token, setToken] = useState<string | null>(null);
+  // Load token from localStorage on mount, or use null
+  const [token, setToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const savedToken = localStorage.getItem('auditai_user_email');
+      return savedToken || null;
+    }
+    return null;
+  });
+
+  // Save token to localStorage whenever it changes
+  const handleTokenChange = (newToken: string | null) => {
+    setToken(newToken);
+    if (typeof window !== 'undefined') {
+      if (newToken) {
+        localStorage.setItem('auditai_user_email', newToken);
+      } else {
+        localStorage.removeItem('auditai_user_email');
+      }
+    }
+  };
 
   return (
     <div className="app-root">
@@ -1009,18 +1200,21 @@ function App() {
           <p>Ask compliance questions, upload documents, and get clear answers in one place.</p>
         </div>
         {token && (
-          <button
-            className="secondary-button"
-            onClick={() => setToken(null)}
-          >
-            Sign out
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <span style={{ fontSize: '0.9rem', color: '#666' }}>Logged in as: {token}</span>
+            <button
+              className="secondary-button"
+              onClick={() => handleTokenChange(null)}
+            >
+              Sign out
+            </button>
+          </div>
         )}
       </header>
 
       {!token ? (
         <main className="app-main">
-          <LoginForm onLoginSuccess={setToken} />
+          <LoginForm onLoginSuccess={handleTokenChange} />
         </main>
       ) : (
         <main className="app-main">
