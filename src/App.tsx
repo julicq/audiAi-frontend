@@ -69,7 +69,7 @@ function LoginForm(props: { onLoginSuccess: (token: string) => void }) {
 
   return (
     <div className="auth-card">
-      <h2>Sign in to AuditAI</h2>
+      <h2>Sign in to AuditMatic</h2>
       <p className="auth-subtitle">
         This screen is for RTO staff. Please use your work email and password.
       </p>
@@ -150,15 +150,18 @@ function ChatTab(props: { token: string | null }) {
     }
     console.log('ensureSession: creating new session, API_BASE_URL:', API_BASE_URL);
     try {
+      // Use the same email as in document uploads and chat messages
+      const email = props.token || 'test@example.com';
       const sessionUrl = `${API_BASE_URL}/api/v1/chat/session`;
-      console.log('ensureSession: fetching:', sessionUrl);
+      console.log('ensureSession: fetching:', sessionUrl, 'with email:', email);
       const res = await fetch(sessionUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'X-User-Email': email,  // Use header instead of body for consistency
           ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
         },
-        body: JSON.stringify({ user_email: 'test@example.com' }),
+        body: JSON.stringify({ user_email: email }),
       });
       if (!res.ok) {
         const text = await res.text();
@@ -206,6 +209,10 @@ function ChatTab(props: { token: string | null }) {
       // Link document to current chat session
       formData.append('analysis_id', sid);
 
+      // Use extended timeout for large documents (10 minutes)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes
+      
       const res = await fetch(url, {
         method: 'POST',
         headers: {
@@ -213,7 +220,10 @@ function ChatTab(props: { token: string | null }) {
           ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
         },
         body: formData,
+        signal: controller.signal,
       });
+      
+      clearTimeout(timeoutId);
 
       const text = await res.text();
       if (!res.ok) {
@@ -230,9 +240,15 @@ function ChatTab(props: { token: string | null }) {
         },
       ]);
     } catch (err: any) {
-      setError(
-        'Sorry, I could not upload your document. Please try again or check your connection.',
-      );
+      if (err.name === 'AbortError') {
+        setError(
+          'Document upload timed out. The document is being processed in the background. Please wait a few minutes and check the document list.',
+        );
+      } else {
+        setError(
+          err.message ?? 'Sorry, I could not upload your document. Please try again or check your connection.',
+        );
+      }
     } finally {
       setUploading(false);
       if (e.target) {
@@ -670,6 +686,10 @@ function RagAdminTab(props: { token: string | null }) {
       formData.append('file', documentFile);
       formData.append('document_type', documentType);
 
+      // Use extended timeout for large documents (10 minutes)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 minutes
+      
       const res = await fetch(url, {
         method: 'POST',
         headers: {
@@ -677,7 +697,10 @@ function RagAdminTab(props: { token: string | null }) {
           ...(props.token ? { Authorization: `Bearer ${props.token}` } : {}),
         },
         body: formData,
+        signal: controller.signal,
       });
+      
+      clearTimeout(timeoutId);
 
       const text = await res.text();
       if (!res.ok) {
@@ -704,10 +727,16 @@ function RagAdminTab(props: { token: string | null }) {
         );
       }
     } catch (err: any) {
-      setError(
-        err.message ??
-          'Sorry, I could not upload your document. Please try again or check your connection.',
-      );
+      if (err.name === 'AbortError') {
+        setError(
+          'Document upload timed out. The document is being processed in the background. Please wait a few minutes and check the document list.',
+        );
+      } else {
+        setError(
+          err.message ??
+            'Sorry, I could not upload your document. Please try again or check your connection.',
+        );
+      }
     } finally {
       setLoadingFileUpload(false);
     }
@@ -1195,9 +1224,16 @@ function App() {
   return (
     <div className="app-root">
       <header className="app-header">
-        <div>
-          <h1>AuditAI – RTO Compliance Assistant</h1>
-          <p>Ask compliance questions, upload documents, and get clear answers in one place.</p>
+        <div className="app-header-left">
+          <img
+            src="/auditmatic-logo.png"
+            alt="AuditMatic – The ASQAnator"
+            className="app-logo"
+          />
+          <div>
+            <h1>AuditMatic – The ASQAnator</h1>
+            <p>Ask compliance questions, upload documents, and get clear answers in one place.</p>
+          </div>
         </div>
         {token && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
